@@ -106,9 +106,7 @@ col_to_drop <- colnames(listings_df)[grep("url", colnames(listings_df))]
 listings_df[, c(col_to_drop) := NULL]
 
 Amsterdam <- listings_df %>%
-  left_join(reviews_df, by = c("id" = "listing_id"), suffix = c("_listings", "_reviews")) %>%
-  left_join(calender_df, by = c("id" = "listing_id"))
-
+  inner_join(reviews_df, by = c("id" = "listing_id"), suffix = c("_listings", "_reviews"))
 
 ```
 
