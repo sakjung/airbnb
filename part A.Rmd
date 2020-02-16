@@ -1,0 +1,115 @@
+---
+title: "airbnb"
+author: "Jung"
+output: html_document
+---
+
+
+```{r}
+library(rvest)
+library(tidyr)
+library(dplyr)
+library(data.table)
+```
+
+
+```{r preparing for downloading}
+airbnb_url <- "http://insideairbnb.com/get-the-data.html"
+
+airbnb_html <- read_html(airbnb_url)
+
+html_node(airbnb_html, "h2") %>%
+  html_text() %>%
+  trimws(.)
+
+city <- airbnb_html %>%
+  html_nodes("h2") %>%
+  html_text() %>%
+  trimws(.)
+
+# need most up-to-date data - first 3 urls (listings, calender, reviews)
+listings_urls <- vector("character")
+calender_urls <- vector("character")
+reviews_urls <-vector("character")
+
+for (table in 1:length(city)) {
+  
+  this_listings_urls <- airbnb_html %>%
+  html_nodes("tbody") %>%
+  .[table] %>%
+  html_nodes("a") %>%
+  html_attr("href") %>%
+  .[1]
+
+  this_calender_urls <- airbnb_html %>%
+  html_nodes("tbody") %>%
+  .[table] %>%
+  html_nodes("a") %>%
+  html_attr("href") %>%
+  .[2]
+
+  this_reviews_urls <- airbnb_html %>%
+  html_nodes("tbody") %>%
+  .[table] %>%
+  html_nodes("a") %>%
+  html_attr("href") %>%
+  .[3]
+  
+  listings_urls <- append(listings_urls, this_listings_urls)
+  calender_urls <- append(calender_urls, this_calender_urls)
+  reviews_urls <- append(reviews_urls, this_reviews_urls)
+}
+
+airbnb_dataframe <- data.frame(city = city,
+                            listings_urls = listings_urls,
+                            calender_urls = calender_urls,
+                            reviews_urls = reviews_urls,
+                            stringsAsFactors = F
+                            )
+```
+
+```{r downloading files}
+dir.create("csv_gz_files")
+
+# downloading files for each city
+
+#for (i in 1:nrow(airbnb_dataframe)) {
+#  
+#  cityname <- strsplit(airbnb_dataframe$city[i], split = ",")[[1]][1]
+#  
+#  split_elements_listings <- strsplit(airbnb_dataframe$listings_urls[i], split = "/")[[1]]
+#  split_elements_calender <- strsplit(airbnb_dataframe$calender_urls[i], split = "/")[[1]]
+#  split_elements_reviews <- strsplit(airbnb_dataframe$reviews_urls[i], split = "/")[[1]]
+    
+#  file_name_listings <- split_elements_listings[length(split_elements_listings)]
+#  file_name_calender <- split_elements_calender[length(split_elements_calender)]
+#  file_name_reviews <- split_elements_reviews[length(split_elements_reviews)]
+  
+#  dir.create(paste0("csv_gz_files/",cityname))
+  
+#  download.file(airbnb_dataframe$listings_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_listings))
+#  download.file(airbnb_dataframe$calender_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_calender))
+#  download.file(airbnb_dataframe$reviews_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_reviews))
+#}
+
+```
+
+
+```{r join the dataset}
+
+calender_df <- fread("csv_gz_files/Amsterdam/calendar.csv.gz") # listing_id
+listings_df <- fread("csv_gz_files/Amsterdam/listings.csv.gz") # id
+reviews_df <- fread("csv_gz_files/Amsterdam/reviews.csv.gz") # listing_id
+
+col_to_drop <- colnames(listings_df)[grep("url", colnames(listings_df))]
+
+listings_df[, c(col_to_drop) := NULL]
+
+Amsterdam <- listings_df %>%
+  left_join(reviews_df, by = c("id" = "listing_id"), suffix = c("_listings", "_reviews")) %>%
+  left_join(calender_df, by = c("id" = "listing_id"))
+
+
+```
+
+
