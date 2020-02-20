@@ -73,24 +73,89 @@ dir.create("csv_gz_files")
 
 # downloading files for each city
 
-#for (i in 1:nrow(airbnb_dataframe)) {
-#  
-#  cityname <- strsplit(airbnb_dataframe$city[i], split = ",")[[1]][1]
-#  
-#  split_elements_listings <- strsplit(airbnb_dataframe$listings_urls[i], split = "/")[[1]]
-#  split_elements_calender <- strsplit(airbnb_dataframe$calender_urls[i], split = "/")[[1]]
-#  split_elements_reviews <- strsplit(airbnb_dataframe$reviews_urls[i], split = "/")[[1]]
+for (i in 1:nrow(airbnb_dataframe)) {
+  
+  cityname <- strsplit(airbnb_dataframe$city[i], split = ",")[[1]][1]
+  
+  split_elements_listings <- strsplit(airbnb_dataframe$listings_urls[i], split = "/")[[1]]
+  split_elements_calender <- strsplit(airbnb_dataframe$calender_urls[i], split = "/")[[1]]
+  split_elements_reviews <- strsplit(airbnb_dataframe$reviews_urls[i], split = "/")[[1]]
     
-#  file_name_listings <- split_elements_listings[length(split_elements_listings)]
-#  file_name_calender <- split_elements_calender[length(split_elements_calender)]
-#  file_name_reviews <- split_elements_reviews[length(split_elements_reviews)]
+  file_name_listings <- split_elements_listings[length(split_elements_listings)]
+  file_name_calender <- split_elements_calender[length(split_elements_calender)]
+  file_name_reviews <- split_elements_reviews[length(split_elements_reviews)]
   
-#  dir.create(paste0("csv_gz_files/",cityname))
-  
-#  download.file(airbnb_dataframe$listings_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_listings))
-#  download.file(airbnb_dataframe$calender_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_calender))
-#  download.file(airbnb_dataframe$reviews_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_reviews))
-#}
+  dir.create(paste0("csv_gz_files/",cityname))
+  tryCatch(
+        {
+          message("Downloading the file...")
+          download.file(airbnb_dataframe$listings_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_listings)) 
+        },
+        error=function(cond) {
+            message(paste("URL does not seem to exist:", url))
+            message("Here's the original error message:")
+            message(cond)
+            return(NA)
+        },
+        warning=function(cond) {
+            message(paste("URL caused a warning:", url))
+            message("Here's the original warning message:")
+            message(cond)
+            return(NULL)
+        },
+        finally={
+            message(paste("Processed URL:", url))
+        }
+    )    
+    download.file(airbnb_dataframe$listings_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_listings))
+  download.file(airbnb_dataframe$calender_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_calender))
+  download.file(airbnb_dataframe$reviews_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_reviews))
+}
+
+
+
+tryCatch(
+        {
+            # Just to highlight: if you want to use more than one 
+            # R expression in the "try" part then you'll have to 
+            # use curly brackets.
+            # 'tryCatch()' will return the last evaluated expression 
+            # in case the "try" part was completed successfully
+
+            message("This is the 'try' part")
+
+            readLines(con=url, warn=FALSE) 
+            # The return value of `readLines()` is the actual value 
+            # that will be returned in case there is no condition 
+            # (e.g. warning or error). 
+            # You don't need to state the return value via `return()` as code 
+            # in the "try" part is not wrapped insided a function (unlike that
+            # for the condition handlers for warnings and error below)
+        },
+        error=function(cond) {
+            message(paste("URL does not seem to exist:", url))
+            message("Here's the original error message:")
+            message(cond)
+            # Choose a return value in case of error
+            return(NA)
+        },
+        warning=function(cond) {
+            message(paste("URL caused a warning:", url))
+            message("Here's the original warning message:")
+            message(cond)
+            # Choose a return value in case of warning
+            return(NULL)
+        },
+        finally = {
+        # NOTE:
+        # Here goes everything that should be executed at the end,
+        # regardless of success or error.
+        # If you want more than one expression to be executed, then you 
+        # need to wrap them in curly brackets ({...}); otherwise you could
+        # just have written 'finally=<expression>' 
+            message(paste("Processed URL:", url))
+        }
+    )    
 
 ```
 
