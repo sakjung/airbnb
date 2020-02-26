@@ -9,110 +9,146 @@ output: html_document
 library(rvest)
 library(tidyr)
 library(dplyr)
+library(pryr)
 library(data.table)
+library(RSQLite)
 ```
 
 
-```{r preparing for downloading}
+```{r preparing for downloading, eval=FALSE, include=FALSE}
 airbnb_url <- "http://insideairbnb.com/get-the-data.html"
 
 airbnb_html <- read_html(airbnb_url)
 
-html_node(airbnb_html, "h2") %>%
-  html_text() %>%
-  trimws(.)
+# testing code
+# html_node(airbnb_html, "h2") %>%
+#   html_text() %>%
+#   trimws(.)
 
-city <- airbnb_html %>%
+ city_country <- airbnb_html %>%
   html_nodes("h2") %>%
   html_text() %>%
   trimws(.)
 
-# need most up-to-date data - first 3 urls (listings, calender, reviews)
+# whole archive - 2 files (listings, reviews)
+
+date_compiled <- vector("character")
 listings_urls <- vector("character")
-calender_urls <- vector("character")
-reviews_urls <-vector("character")
+reviews_urls <- vector("character")
+date_compiled <- vector("character")
+city <- vector("character")
 
-for (table in 1:length(city)) {
+for (table in 1:length(city_country)) {
   
-  this_listings_urls <- airbnb_html %>%
-  html_nodes("tbody") %>%
-  .[table] %>%
-  html_nodes("a") %>%
-  html_attr("href") %>%
-  .[1]
-
-  this_calender_urls <- airbnb_html %>%
-  html_nodes("tbody") %>%
-  .[table] %>%
-  html_nodes("a") %>%
-  html_attr("href") %>%
-  .[2]
-
-  this_reviews_urls <- airbnb_html %>%
-  html_nodes("tbody") %>%
-  .[table] %>%
-  html_nodes("a") %>%
-  html_attr("href") %>%
-  .[3]
+  all_urls <- airbnb_html %>%
+    html_nodes("tbody") %>%
+    .[table] %>%
+    html_nodes("a") %>%
+    html_attr("href")
   
+  texts <- airbnb_html %>%
+      html_nodes("tbody") %>%
+      .[table] %>%
+      html_nodes("td") %>%
+      html_text() %>%
+      trimws(.)
+  
+  # x = 1 (date compiled) / x = 2 (city)
+  get_text <- function (x) {
+  variable_all <- texts[which(1:length(texts) %% 4 == x)]
+  variable_index <- seq_along(variable_all) %% 7
+  this_variable <- variable_all[which(variable_index == 1)]
+  return(this_variable)
+  }
+  
+  # there are 7 files per compilation - we need first three files (csv.gz files) 
+  
+  number_of_compilation <- length(all_urls)
+  
+  this_date_compiled <- get_text(1)
+  this_city <- get_text(2)
+  
+  this_listings_urls <- all_urls[which(1:number_of_compilation %% 7 == 1)]
+
+  this_reviews_urls <- all_urls[which(1:number_of_compilation %% 7 == 3)] 
+  
+  city <- append(city, this_city)
+  date_compiled <- append(date_compiled, this_date_compiled)
   listings_urls <- append(listings_urls, this_listings_urls)
-  calender_urls <- append(calender_urls, this_calender_urls)
   reviews_urls <- append(reviews_urls, this_reviews_urls)
 }
 
-airbnb_dataframe <- data.frame(city = city,
-                            listings_urls = listings_urls,
-                            calender_urls = calender_urls,
-                            reviews_urls = reviews_urls,
-                            stringsAsFactors = F
-                            )
+airbnb_dataframe <- data.frame(date_compiled = date_compiled,
+                               city = city,
+                               listings_urls = listings_urls,
+                               reviews_urls = reviews_urls,
+                               stringsAsFactors = F)
+
+airbnb_dataframe$date_compiled <- lubridate::dmy(airbnb_dataframe$date_compiled)
+
+rm(list=setdiff(ls(), "airbnb_dataframe"))
 ```
 
-```{r downloading files}
+
+
+```{r downloading files, eval=FALSE, include=FALSE}
 dir.create("csv_gz_files")
 
-# downloading files for each city
+# downloading files
 
 for (i in 1:nrow(airbnb_dataframe)) {
   
-  cityname <- strsplit(airbnb_dataframe$city[i], split = ",")[[1]][1]
+  cityname <- airbnb_dataframe$city[i]
+  date <- airbnb_dataframe$date_compiled[i]
+  
+  # strsplit(airbnb_dataframe$city[i], split = ",")[[1]][1]
   
   split_elements_listings <- strsplit(airbnb_dataframe$listings_urls[i], split = "/")[[1]]
-  split_elements_calender <- strsplit(airbnb_dataframe$calender_urls[i], split = "/")[[1]]
   split_elements_reviews <- strsplit(airbnb_dataframe$reviews_urls[i], split = "/")[[1]]
     
-  file_name_listings <- split_elements_listings[length(split_elements_listings)]
-  file_name_calender <- split_elements_calender[length(split_elements_calender)]
-  file_name_reviews <- split_elements_reviews[length(split_elements_reviews)]
+  file_name_listings <- paste0(date,"_",split_elements_listings[length(split_elements_listings)])
+  file_name_reviews <- paste0(date,"_",split_elements_reviews[length(split_elements_reviews)])
   
+  if (dir.exists(paste0("csv_gz_files/",cityname)) == FALSE) {
   dir.create(paste0("csv_gz_files/",cityname))
+  }
+  
+  dir.create(paste0("csv_gz_files/",cityname,"/",date))
+  
+  # downloading required files: listings, calender and reviews  
   tryCatch(
         {
-          message("Downloading the file...")
-          download.file(airbnb_dataframe$listings_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_listings)) 
+          message("Downloading the listings file...")
+          download.file(airbnb_dataframe$listings_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",date,"/",file_name_listings)) 
         },
         error=function(cond) {
-            message(paste("URL does not seem to exist:", url))
-            message("Here's the original error message:")
+            message(paste("URL does not seem to exist:", airbnb_dataframe$listings_urls[i]))
+            message("This is the original error message:")
             message(cond)
-            return(NA)
-        },
-        warning=function(cond) {
-            message(paste("URL caused a warning:", url))
-            message("Here's the original warning message:")
-            message(cond)
-            return(NULL)
         },
         finally={
-            message(paste("Processed URL:", url))
+            message(paste("Processed URL:", airbnb_dataframe$listings_urls[i]))
         }
-    )    
-    download.file(airbnb_dataframe$listings_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_listings))
-  download.file(airbnb_dataframe$calender_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_calender))
-  download.file(airbnb_dataframe$reviews_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_reviews))
+    )
+  tryCatch(
+        {
+          message("Downloading the reviews file...")
+          download.file(airbnb_dataframe$reviews_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",date,"/",file_name_reviews)) 
+        },
+        error=function(cond) {
+            message(paste("URL does not seem to exist:", airbnb_dataframe$reviews_urls[i]))
+            message("Here's the original error message:")
+            message(cond)
+        },
+        finally={
+            message(paste("Processed URL:", airbnb_dataframe$reviews_urls[i]))
+        }
+    )
 }
+```
 
-
+# IGNORE THIS
+# JUST FOR A REFERENCE
 
 tryCatch(
         {
@@ -155,23 +191,62 @@ tryCatch(
         # just have written 'finally=<expression>' 
             message(paste("Processed URL:", url))
         }
-    )    
+    )
 
-```
+```{r connect to db}
+
+airbnb_db <- dbConnect(RSQLite::SQLite(), "airbnb.sqlite")
+
+for (i in 1:length(list.files("csv_gz_files"))) {
+  
+  # folder structure - csv_gz_files/cityname/date
+  
+  this_folder <- list.files("csv_gz_files")[i]
+  date_folders <- list.files(paste0("csv_gz_files/",this_folder))
+  
+  # file name e.g. "2010-09-11_listings.csv.gz"
+  
+#  file_order <- all_files %>%
+#    sapply(strsplit(list.files("csv_gz_files/Amsterdam"), split = "_"), "[", 1) %>%
+#    as.Date() %>% 
+#    order()
+  
+#  all_files_ordered <- all_files[file_order] 
+  
+  for (k in 1:length(date_folders)) {
+    
+    this_date_folder <- date_folders[k]
+    
+    this_listings <- list.files(paste0("csv_gz_files/",this_folder,"/",this_date_folder))[1]
+    this_reviews <- list.files(paste0("csv_gz_files/",this_folder,"/",this_date_folder))[2]
+    
+    listings_df <- fread(paste0("csv_gz_files/",this_folder,"/",this_listings)) 
+    reviews_df <- fread(paste0("csv_gz_files/",this_folder,"/",this_reviews))
+    
+    dbWriteTable(airbnb_db, "listings", listings_df, append = TRUE)
+    dbWriteTable(airbnb_db, "reviews", reviews_df, append = TRUE)
+  }
+}
+
+dbListTables(airbnb_db)
+
+dbDisconnect(airbnb_db)
+# remove db
+# unlink("airbnb.sqlite")
 
 
-```{r join the dataset}
+# col_to_drop <- colnames(listings_df)[grep("url", colnames(listings_df))]
 
-calender_df <- fread("csv_gz_files/Amsterdam/calendar.csv.gz") # listing_id
-listings_df <- fread("csv_gz_files/Amsterdam/listings.csv.gz") # id
-reviews_df <- fread("csv_gz_files/Amsterdam/reviews.csv.gz") # listing_id
+# listings_df[, c(col_to_drop) := NULL]
 
-col_to_drop <- colnames(listings_df)[grep("url", colnames(listings_df))]
+# listings -> id
+# reviews -> listing_id
 
-listings_df[, c(col_to_drop) := NULL]
+# Amsterdam <- listings_df %>%
+#  inner_join(reviews_df, by = c("id" = "listing_id"), suffix = c("_listings", "_reviews"))
+# or left_join?
 
-Amsterdam <- listings_df %>%
-  inner_join(reviews_df, by = c("id" = "listing_id"), suffix = c("_listings", "_reviews"))
+
 
 ```
 
