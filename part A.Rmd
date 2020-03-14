@@ -12,6 +12,11 @@ library(dplyr)
 library(pryr)
 library(data.table)
 library(RSQLite)
+library(foreach)
+library(doParallel)
+library(rbenchmark)
+library(tidytext)
+library(cld3)
 ```
 
 
@@ -25,7 +30,7 @@ airbnb_html <- read_html(airbnb_url)
 #   html_text() %>%
 #   trimws(.)
 
- city_country <- airbnb_html %>%
+city_country <- airbnb_html %>%
   html_nodes("h2") %>%
   html_text() %>%
   trimws(.)
@@ -34,6 +39,7 @@ airbnb_html <- read_html(airbnb_url)
 
 date_compiled <- vector("character")
 listings_urls <- vector("character")
+calender_urls <- vector("character")
 reviews_urls <- vector("character")
 date_compiled <- vector("character")
 city <- vector("character")
@@ -54,39 +60,47 @@ for (table in 1:length(city_country)) {
       trimws(.)
   
   # x = 1 (date compiled) / x = 2 (city)
-  get_text <- function (x) {
-  variable_all <- texts[which(1:length(texts) %% 4 == x)]
-  variable_index <- seq_along(variable_all) %% 7
-  this_variable <- variable_all[which(variable_index == 1)]
-  return(this_variable)
+  get_text <- function (x, texts) {
+    # extract "x"th column of the table
+    variable_all <- texts[which(1:length(texts) %% 4 == x)]
+    # find out the index to cut by 7 rows
+    variable_index <- seq_along(variable_all) %% 7
+    # extract the first row of the "x"th colmn eventually
+    this_variable <- variable_all[which(variable_index == 1)]
+    return(this_variable)
   }
   
   # there are 7 files per compilation - we need first three files (csv.gz files) 
   
   number_of_compilation <- length(all_urls)
   
-  this_date_compiled <- get_text(1)
-  this_city <- get_text(2)
+  this_date_compiled <- get_text(1, texts)
+  this_city <- get_text(2, texts)
   
   this_listings_urls <- all_urls[which(1:number_of_compilation %% 7 == 1)]
+  
+  this_calender_urls <- all_urls[which(1:number_of_compilation %% 7 == 2)]
 
   this_reviews_urls <- all_urls[which(1:number_of_compilation %% 7 == 3)] 
   
   city <- append(city, this_city)
   date_compiled <- append(date_compiled, this_date_compiled)
   listings_urls <- append(listings_urls, this_listings_urls)
+  calender_urls <- append(calender_urls, this_calender_urls)
   reviews_urls <- append(reviews_urls, this_reviews_urls)
 }
 
 airbnb_dataframe <- data.frame(date_compiled = date_compiled,
                                city = city,
                                listings_urls = listings_urls,
+                               calender_urls = calender_urls,
                                reviews_urls = reviews_urls,
                                stringsAsFactors = F)
 
 airbnb_dataframe$date_compiled <- lubridate::dmy(airbnb_dataframe$date_compiled)
 
 rm(list=setdiff(ls(), "airbnb_dataframe"))
+gc()
 ```
 
 
@@ -101,25 +115,24 @@ for (i in 1:nrow(airbnb_dataframe)) {
   cityname <- airbnb_dataframe$city[i]
   date <- airbnb_dataframe$date_compiled[i]
   
-  # strsplit(airbnb_dataframe$city[i], split = ",")[[1]][1]
-  
   split_elements_listings <- strsplit(airbnb_dataframe$listings_urls[i], split = "/")[[1]]
+  split_elements_calender <- strsplit(airbnb_dataframe$calender_urls[i], split = "/")[[1]]
   split_elements_reviews <- strsplit(airbnb_dataframe$reviews_urls[i], split = "/")[[1]]
     
   file_name_listings <- paste0(date,"_",split_elements_listings[length(split_elements_listings)])
+  file_name_calender <- paste0(date,"_",split_elements_calender[length(split_elements_calender)])
   file_name_reviews <- paste0(date,"_",split_elements_reviews[length(split_elements_reviews)])
   
   if (dir.exists(paste0("csv_gz_files/",cityname)) == FALSE) {
   dir.create(paste0("csv_gz_files/",cityname))
   }
-  
-  dir.create(paste0("csv_gz_files/",cityname,"/",date))
+#  dir.create(paste0("csv_gz_files/",cityname,"/",date))
   
   # downloading required files: listings, calender and reviews  
   tryCatch(
         {
           message("Downloading the listings file...")
-          download.file(airbnb_dataframe$listings_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",date,"/",file_name_listings)) 
+          download.file(airbnb_dataframe$listings_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_listings)) 
         },
         error=function(cond) {
             message(paste("URL does not seem to exist:", airbnb_dataframe$listings_urls[i]))
@@ -132,8 +145,22 @@ for (i in 1:nrow(airbnb_dataframe)) {
     )
   tryCatch(
         {
+          message("Downloading the calneder file...")
+          download.file(airbnb_dataframe$calender_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_calender)) 
+        },
+        error=function(cond) {
+            message(paste("URL does not seem to exist:", airbnb_dataframe$calender_urls[i]))
+            message("This is the original error message:")
+            message(cond)
+        },
+        finally={
+            message(paste("Processed URL:", airbnb_dataframe$calender_urls[i]))
+        }
+    )
+  tryCatch(
+        {
           message("Downloading the reviews file...")
-          download.file(airbnb_dataframe$reviews_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",date,"/",file_name_reviews)) 
+          download.file(airbnb_dataframe$reviews_urls[i], destfile = paste0("csv_gz_files/",cityname,"/",file_name_reviews)) 
         },
         error=function(cond) {
             message(paste("URL does not seem to exist:", airbnb_dataframe$reviews_urls[i]))
@@ -145,6 +172,9 @@ for (i in 1:nrow(airbnb_dataframe)) {
         }
     )
 }
+
+rm(list=ls())
+
 ```
 
 # IGNORE THIS
@@ -193,61 +223,609 @@ tryCatch(
         }
     )
 
-```{r connect to db}
+```{r inpect the data}
 
-airbnb_db <- dbConnect(RSQLite::SQLite(), "airbnb.sqlite")
+# investigate the first compiled files
+# to have a look at the data
+# and figure out what columns I need
+
+calendar_df <- fread("csv_gz_files/Amsterdam/2015-04-05_calendar.csv.gz")
+listings_df <- fread("csv_gz_files/Amsterdam/2015-04-05_listings.csv.gz")
+reviews_df <- fread("csv_gz_files/Amsterdam/2015-04-05_reviews.csv.gz")
+
+# drop useless columns containing "url"
+col_to_drop <- colnames(listings_df)[grepl("url", colnames(listings_df))]
+listings_df[, c(col_to_drop) := NULL]
+
+colnames(calendar_df)
+colnames(listings_df)
+colnames(reviews_df)
+
+## columns we need:
+
+# columns we need in calendar
+calendar_col <- c("listing_id", "date", "available", "price")
+
+# columns we need in listings
+listings_col <- c("id", "scrape_id", "last_scraped", "name", "summary", "space", "description", "experiences_offered", "neighborhood_overview", "notes", "transit", "host_id", "host_name", "host_since", "host_location", "host_about", "host_response_time", "host_response_rate", "host_acceptance_rate", "host_is_superhost", "host_neighbourhood", "host_listings_count", "host_total_listings_count", "host_verifications", "host_has_profile_pic", "host_identity_verified", "neighbourhood", "neighbourhood_cleansed", "neighbourhood_group_cleansed", "is_location_exact", "property_type", "room_type", "accommodates", "bathrooms", "bedrooms", "beds", "bed_type", "amenities", "square_feet", "price", "weekly_price", "monthly_price", "security_deposit", "cleaning_fee", "guests_included", "extra_people", "minimum_nights", "maximum_nights", "calendar_updated", "has_availability", "availability_30", "availability_60", "availability_90", "availability_365", "number_of_reviews", "first_review", "last_review", "review_scores_rating", "review_scores_accuracy", "review_scores_cleanliness", "review_scores_checkin", "review_scores_communication", "review_scores_location", "review_scores_value", "requires_license", "license", "instant_bookable", "cancellation_policy", "require_guest_profile_picture", "require_guest_phone_verification", "calculated_host_listings_count", "reviews_per_month")
+
+# columns we need in reviews
+reviews_col <- c("listing_id", "id", "date", "reviewer_id", "reviewer_name", "comments")
+
+# making a seed file
+# use this seed to create table schema in sqlite database
+calendar_seed <- calendar_df[1]
+listings_seed <- as_tibble(listings_df)[1, listings_col]
+reviews_seed <- reviews_df[1]
+
+
+# saved seed files as csv just in case
+# write.csv(calendar_seed, "calendar_seed")
+# write.csv(listings_seed, "listings_seed")
+# write.csv(reviews_seed, "reviews_seed")
+
+rm(calendar_df, listings_df, reviews_df)
+gc()
+memory.size()
+```
+
+```{r initiate db connection}
+
+airbnb_db <- dbConnect(RSQLite::SQLite(), "D:\\airbnb\\airbnb.sqlite")
+
+dbCreateTable(airbnb_db, "calendar", calendar_seed)
+dbCreateTable(airbnb_db, "listings", listings_seed)
+dbCreateTable(airbnb_db, "reviews", reviews_seed)
+
+dbDisconnect(airbnb_db)
+```
+
+
+``` {r find the fastest method}
+# tried various methods which seems the most efficient to move csv.gz files to sqlite database
+# using rbenchmark to compare elapsed time between various methods
+# We implemented test on Rscript
+# Actually there are more test codes but this is one part of benchmark test
+reviews_df <- fread("csv_gz_files/Amsterdam/2015-04-05_reviews.csv.gz")
+
+airbnb_db <- dbConnect(RSQLite::SQLite(), "D:\\airbnb\\airbnb_test.sqlite")
+
+reviews_col <- c("listing_id", "id", "date", "reviewer_id", "reviewer_name", "comments")
+
+reviews_seed <- reviews_df[1]
+
+dbCreateTable(airbnb_db, "reviews_test", reviews_seed)
+
+rm(reviews_seed, reviews_df)
+gc()
+print(memory.size())
+
+benchmark <- benchmark(
+            cut_by_50000_write = {
+              
+              this_folder <- list.files("csv_gz_files")[1]
+              all_files <- list.files(paste0("csv_gz_files/",this_folder))
+              all_files_reviews <- all_files[grepl("reviews",all_files)]
+              
+              for (k in 1:10) {
+                
+                this_reviews <- all_files_reviews[k]
+                
+                print(paste("Reading", this_reviews, "...."))
+                print(memory.size())
+                
+                reviews_df <- fread(paste0("csv_gz_files/",this_folder,"/",this_reviews))
+                
+                # adjusting dataframe according to the fileds in the database table
+                col_to_add_rev <- reviews_col[! reviews_col %in% colnames(reviews_df)]
+                col_to_drop_rev <- colnames(reviews_df)[! colnames(reviews_df) %in% reviews_col] 
+                suppressWarnings(reviews_df[, c(col_to_drop_rev) := NULL])
+                suppressWarnings(reviews_df[, col_to_add_rev] <- NA)
+                
+                reviews_chunks <- split(reviews_df, (seq(nrow(reviews_df))-1) %/% 50000)
+                
+                lapply(reviews_chunks, function(chunk) dbWriteTable(airbnb_db, "reviews_test", chunk, append = TRUE))
+                
+                rm(reviews_df, reviews_chunks)
+                gc()
+                print(memory.size())
+              }
+            },
+            cut_by_50000_insert = {
+              
+              dbBegin(airbnb_db)
+              
+              this_folder <- list.files("csv_gz_files")[1]
+              all_files <- list.files(paste0("csv_gz_files/",this_folder))
+              all_files_reviews <- all_files[grepl("reviews",all_files)]
+              
+              for (k in 1:10) {
+                
+                this_reviews <- all_files_reviews[k]
+                
+                print(paste("Reading", this_reviews, "...."))
+                print(memory.size())
+                
+                reviews_df <- fread(paste0("csv_gz_files/",this_folder,"/",this_reviews))
+                
+                # adjusting dataframe according to the fileds in the database table
+                col_to_add_rev <- reviews_col[! reviews_col %in% colnames(reviews_df)]
+                col_to_drop_rev <- colnames(reviews_df)[! colnames(reviews_df) %in% reviews_col] 
+                suppressWarnings(reviews_df[, c(col_to_drop_rev) := NULL])
+                suppressWarnings(reviews_df[, col_to_add_rev] <- NA)
+                
+                reviews_chunks <- split(reviews_df, (seq(nrow(reviews_df))-1) %/% 50000)
+                
+                lapply(reviews_chunks, function(chunk) {
+                q <- dbSendQuery(airbnb_db, 'INSERT INTO reviews_test (listing_id, id, date, reviewer_id, reviewer_name, comments) 
+                          VALUES (:listing_id, :id, :date, :reviewer_id, :reviewer_name, :comments);', chunk)
+                dbClearResult(q)
+                })
+                
+                rm(reviews_df, reviews_chunks)
+                gc()
+                print(memory.size())
+              }
+              dbCommit(airbnb_db)
+            },
+            dbwritetable = {
+              
+              dbBegin(airbnb_db)
+              
+              this_folder <- list.files("csv_gz_files")[1]
+              all_files <- list.files(paste0("csv_gz_files/",this_folder))
+              all_files_reviews <- all_files[grepl("reviews",all_files)]
+              
+              for (k in 1:10) {
+                
+                this_reviews <- all_files_reviews[k]
+                
+                print(paste("Reading", this_reviews, "...."))
+                print(memory.size())
+                
+                reviews_df <- fread(paste0("csv_gz_files/",this_folder,"/",this_reviews))
+                
+                # adjusting dataframe according to the fileds in the database table
+                col_to_add_rev <- reviews_col[! reviews_col %in% colnames(reviews_df)]
+                col_to_drop_rev <- colnames(reviews_df)[! colnames(reviews_df) %in% reviews_col] 
+                suppressWarnings(reviews_df[, c(col_to_drop_rev) := NULL])
+                suppressWarnings(reviews_df[, col_to_add_rev] <- NA)
+                
+                dbWriteTable(airbnb_db, "reviews_test", reviews_df, append = TRUE))
+                
+                rm(reviews_df)
+                gc()
+                print(memory.size())
+              }
+              dbCommit(airbnb_db)
+            },
+            bulk_insert = {
+            
+            dbBegin(airbnb_db)  
+              
+            this_folder <- list.files("csv_gz_files")[1]
+            all_files <- list.files(paste0("csv_gz_files/",this_folder))
+            all_files_reviews <- all_files[grepl("reviews",all_files)]
+            
+            for (k in 1:10) {
+              
+              this_reviews <- all_files_reviews[k]
+              
+              print(paste("Reading", this_reviews, "...."))
+              print(memory.size())
+              
+              reviews_df <- fread(paste0("csv_gz_files/",this_folder,"/",this_reviews))
+              
+              # adjusting dataframe according to the fileds in the database table
+              col_to_add_rev <- reviews_col[! reviews_col %in% colnames(reviews_df)]
+              col_to_drop_rev <- colnames(reviews_df)[! colnames(reviews_df) %in% reviews_col] 
+              suppressWarnings(reviews_df[, c(col_to_drop_rev) := NULL])
+              suppressWarnings(reviews_df[, col_to_add_rev] <- NA)
+              
+              
+              q <- dbSendQuery(airbnb_db, 'INSERT INTO reviews_test (listing_id, id, date, reviewer_id, reviewer_name, comments) 
+                          VALUES (:listing_id, :id, :date, :reviewer_id, :reviewer_name, :comments);', reviews_df)
+              
+              dbClearResult(q)
+              
+              rm(reviews_df)
+              gc()
+              print(memory.size())
+            }
+            dbCommit(airbnb_db)
+          },
+          replications = 1
+)
+
+# remove after the tests
+# dbDisconnect(airbnb_db_test)
+# unlink("D:\\airbnb\\airbnb_test.sqlite")
+
+# the result shows that bulk_insert shows the best performance
+# we will use bulk_insert method to export csv.gz files to sqlite database
+
+# Since the amount of data is too large,
+# we devided the whole procedures into two
+# to process lisings and reviews separtely
+# the follwing two chunks are the two processes
+```
+
+```{r listings to db}
+# copy whole chunk to Rscript and run
+# when laptop is not in use (e.g. before sleep)
+
+library(dplyr)
+library(data.table)
+library(RSQLite)
+
+listings_df <- fread("csv_gz_files/Amsterdam/2015-04-05_listings.csv.gz")
+
+listings_col <- c("id", "scrape_id", "last_scraped", "name", "summary",
+                  "space", "description", "experiences_offered", "neighborhood_overview",
+                  "notes", "transit", "host_id", "host_name", "host_since", "host_location", 
+                  "host_about", "host_response_time", "host_response_rate",
+                  "host_acceptance_rate", "host_is_superhost", "host_neighbourhood",
+                  "host_listings_count", "host_total_listings_count", "host_verifications",
+                  "host_has_profile_pic", "host_identity_verified", "neighbourhood",
+                  "neighbourhood_cleansed", "neighbourhood_group_cleansed", 
+                  "is_location_exact", "property_type", "room_type", "accommodates", 
+                  "bathrooms", "bedrooms", "beds", "bed_type", "amenities", "square_feet", 
+                  "price", "weekly_price", "monthly_price", "security_deposit", 
+                  "cleaning_fee", "guests_included", "extra_people", "minimum_nights",
+                  "maximum_nights", "calendar_updated", "has_availability", 
+                  "availability_30", "availability_60", "availability_90", "availability_365",
+                  "number_of_reviews", "first_review", "last_review", "review_scores_rating",
+                  "review_scores_accuracy", "review_scores_cleanliness",
+                  "review_scores_checkin", "review_scores_communication", 
+                  "review_scores_location", "review_scores_value", "requires_license",
+                  "license", "instant_bookable", "cancellation_policy", 
+                  "require_guest_profile_picture", "require_guest_phone_verification",
+                  "calculated_host_listings_count", "reviews_per_month")
+
+listings_seed <- as_tibble(listings_df)[1, listings_col]
+
+rm(listings_df)
+gc()
+print(memory.size())
+
+airbnb_db <- dbConnect(RSQLite::SQLite(), "D:\\airbnb\\airbnb.sqlite")
+
+dbCreateTable(airbnb_db, "listings", listings_seed)
+
+rm(listings_seed)
+gc()
+print(memory.size())
 
 for (i in 1:length(list.files("csv_gz_files"))) {
   
-  # folder structure - csv_gz_files/cityname/date
+  # folder structure - csv_gz_files/cityname
   
   this_folder <- list.files("csv_gz_files")[i]
-  date_folders <- list.files(paste0("csv_gz_files/",this_folder))
+  all_files <- list.files(paste0("csv_gz_files/",this_folder))
   
-  # file name e.g. "2010-09-11_listings.csv.gz"
-  
-#  file_order <- all_files %>%
-#    sapply(strsplit(list.files("csv_gz_files/Amsterdam"), split = "_"), "[", 1) %>%
-#    as.Date() %>% 
-#    order()
-  
-#  all_files_ordered <- all_files[file_order] 
-  
-  for (k in 1:length(date_folders)) {
-    
-    this_date_folder <- date_folders[k]
-    
-    this_listings <- list.files(paste0("csv_gz_files/",this_folder,"/",this_date_folder))[1]
-    this_reviews <- list.files(paste0("csv_gz_files/",this_folder,"/",this_date_folder))[2]
-    
-    listings_df <- fread(paste0("csv_gz_files/",this_folder,"/",this_listings)) 
-    reviews_df <- fread(paste0("csv_gz_files/",this_folder,"/",this_reviews))
-    
-    dbWriteTable(airbnb_db, "listings", listings_df, append = TRUE)
-    dbWriteTable(airbnb_db, "reviews", reviews_df, append = TRUE)
+  if (length(all_files) == 0) {
+    print (paste(this_folder, ": this folder is empty")) ; next
   }
+  
+  all_files_listings <- all_files[grepl("listings",all_files)]
+  
+  dbBegin(airbnb_db)
+  
+  for (k in 1:length(all_files_listings)) {
+    
+    this_listings_file <- all_files_listings[k]
+    print(paste("Reading", this_folder, this_listings_file, "...."))
+    start <- Sys.time()
+    
+    print(memory.size())
+    
+    listings_df <- fread(paste0("csv_gz_files/",this_folder,"/",this_listings_file))
+    
+    # adjusting dataframe according to the fileds in the database table
+    col_to_add_list <- listings_col[! listings_col %in% colnames(listings_df)]
+    col_to_drop_list <- colnames(listings_df)[! colnames(listings_df) %in% listings_col] 
+    suppressWarnings(listings_df[, c(col_to_drop_list) := NULL])
+    suppressWarnings(listings_df[, col_to_add_list] <- NA)
+    
+    q <- dbSendQuery(airbnb_db, 'INSERT INTO listings (id, scrape_id, last_scraped, name, summary,
+                   space, description, experiences_offered, neighborhood_overview,
+                   notes, transit, host_id, host_name, host_since, host_location, 
+                   host_about, host_response_time, host_response_rate,
+                   host_acceptance_rate, host_is_superhost, host_neighbourhood,
+                   host_listings_count, host_total_listings_count, host_verifications,
+                   host_has_profile_pic, host_identity_verified, neighbourhood,
+                   neighbourhood_cleansed, neighbourhood_group_cleansed, 
+                   is_location_exact, property_type, room_type, accommodates, 
+                   bathrooms, bedrooms, beds, bed_type, amenities, square_feet, 
+                   price, weekly_price, monthly_price, security_deposit, 
+                   cleaning_fee, guests_included, extra_people, minimum_nights,
+                   maximum_nights, calendar_updated, has_availability, 
+                   availability_30, availability_60, availability_90, availability_365,
+                   number_of_reviews, first_review, last_review, review_scores_rating,
+                   review_scores_accuracy, review_scores_cleanliness,
+                   review_scores_checkin, review_scores_communication, 
+                   review_scores_location, review_scores_value, requires_license,
+                   license, instant_bookable, cancellation_policy, 
+                   require_guest_profile_picture, require_guest_phone_verification,
+                   calculated_host_listings_count, reviews_per_month) 
+                          VALUES (:id, :scrape_id, :last_scraped, :name, :summary,
+                   :space, :description, :experiences_offered, :neighborhood_overview,
+                   :notes, :transit, :host_id, :host_name, :host_since, :host_location, 
+                   :host_about, :host_response_time, :host_response_rate,
+                   :host_acceptance_rate, :host_is_superhost, :host_neighbourhood,
+                   :host_listings_count, :host_total_listings_count, :host_verifications,
+                   :host_has_profile_pic, :host_identity_verified, :neighbourhood,
+                   :neighbourhood_cleansed, :neighbourhood_group_cleansed, 
+                   :is_location_exact, :property_type, :room_type, :accommodates, 
+                   :bathrooms, :bedrooms, :beds, :bed_type, :amenities, :square_feet, 
+                   :price, :weekly_price, :monthly_price, :security_deposit, 
+                   :cleaning_fee, :guests_included, :extra_people, :minimum_nights,
+                   :maximum_nights, :calendar_updated, :has_availability, 
+                   :availability_30, :availability_60, :availability_90, :availability_365,
+                   :number_of_reviews, :first_review, :last_review, :review_scores_rating,
+                   :review_scores_accuracy, :review_scores_cleanliness,
+                   :review_scores_checkin, :review_scores_communication, 
+                   :review_scores_location, :review_scores_value, :requires_license,
+                   :license, :instant_bookable, :cancellation_policy, 
+                   :require_guest_profile_picture, :require_guest_phone_verification,
+                   :calculated_host_listings_count, :reviews_per_month);', listings_df)
+    
+    dbClearResult(q)
+    
+    print(paste("Moved", this_folder, this_listings_file, "to the listings table"))
+    print(paste("It took", Sys.time()-start, "to process!"))
+    
+    rm(listings_df)
+    gc()
+    print(memory.size())
+  }
+  # one transaction per city
+  dbCommit(airbnb_db)
 }
+
+dbDisconnect(airbnb_db)
+```
+
+```{r reviews to db}
+# copy whole chunk to Rscript and run
+# when laptop is not in use (e.g. before sleep)
+library(dplyr)
+library(data.table)
+library(RSQLite)
+
+reviews_df <- fread("csv_gz_files/Amsterdam/2015-04-05_reviews.csv.gz")
+
+reviews_col <- c("listing_id", "id", "date", "reviewer_id", "reviewer_name", "comments")
+reviews_seed <- reviews_df[1]
+
+rm(reviews_df)
+gc()
+print(memory.size())
+
+airbnb_db <- dbConnect(RSQLite::SQLite(), "D:\\airbnb\\airbnb.sqlite")
+
+dbCreateTable(airbnb_db, "reviews", reviews_seed)
+
+rm(reviews_seed)
+gc()
+print(memory.size())
+
+for (i in 1:length(list.files("csv_gz_files"))) {
+  
+  # folder structure - csv_gz_files/cityname
+  
+  this_folder <- list.files("csv_gz_files")[i]
+  all_files <- list.files(paste0("csv_gz_files/",this_folder))
+  
+  if (length(all_files) == 0) {
+    print (paste(this_folder, ": this folder is empty")) ; next
+  }
+  
+  all_files_reviews <- all_files[grepl("reviews",all_files)]
+  
+  dbBegin(airbnb_db)
+  
+  for (j in 1:length(all_files_reviews)) {
+    
+    this_reviews_file <- all_files_reviews[j]
+    print(paste("Reading", this_folder, this_reviews_file, "...."))
+    print(memory.size())
+    
+    start <- Sys.time()
+    
+    reviews_df <- fread(paste0("csv_gz_files/",this_folder,"/",this_reviews_file))
+    
+    # adjusting dataframe according to the fileds in the database table
+    col_to_add_rev <- reviews_col[! reviews_col %in% colnames(reviews_df)]
+    col_to_drop_rev <- colnames(reviews_df)[! colnames(reviews_df) %in% reviews_col] 
+    suppressWarnings(reviews_df[, c(col_to_drop_rev) := NULL])
+    suppressWarnings(reviews_df[, col_to_add_rev] <- NA)
+    
+    q <- dbSendQuery(airbnb_db, 'INSERT INTO reviews (listing_id, id, date, reviewer_id, reviewer_name, comments) 
+                          VALUES (:listing_id, :id, :date, :reviewer_id, :reviewer_name, :comments);', reviews_df)
+    
+    dbClearResult(q)
+    
+    print(paste("Moved", this_folder, this_reviews_file, "to the reviews table"))
+    print(paste("It took", Sys.time()-start, "to process!"))
+    
+    rm(reviews_df)
+    gc()
+    print(memory.size())
+  }
+  
+  # one transaction per city
+  dbCommit(airbnb_db)
+}
+
+dbDisconnect(airbnb_db)
+```
+
+
+```{r retrieve South Aegean}
+list.files("csv_gz_files/South Aegean")
+
+airbnb_db <- dbConnect(RSQLite::SQLite(), "D:\\airbnb\\airbnb.sqlite")
+
+
+most_recent_listings_date <- strsplit(list.files("csv_gz_files/South Aegean"), 
+                                      split = "_")[[length(list.files("csv_gz_files/South Aegean"))]][1]
+most_recent_listings <- fread(paste0("csv_gz_files/South Aegean/",most_recent_listings_date, "_listings.csv.gz"))
+review <- fread(paste0("csv_gz_files/South Aegean/",most_recent_listings_date, "_reviews.csv.gz"))
+scrape_id <- as.character(unique(most_recent_listings$scrape_id))
+
+# use this scrape_id to extract most recent listings from the database
+
+# create index for scrape_id and listing_id for fast query
+# dbSendQuery(airbnb_db, "CREATE INDEX scrape_id ON listings (scrape_id)")
+# dbSendQuery(airbnb_db, "CREATE INDEX listing_id ON reviews (listing_id)")
 
 dbListTables(airbnb_db)
 
-dbDisconnect(airbnb_db)
-# remove db
-# unlink("airbnb.sqlite")
+# query to extract most recent listing file
+query_listings <- paste0("SELECT * FROM listings WHERE scrape_id = ",scrape_id)
+
+res <- dbSendQuery(airbnb_db, query_listings)
+south_aegean_listings <- dbFetch(res, n=-1)
+dbClearResult(res)
+rm(most_recent_listings)
+
+listing_id <- unique(south_aegean_listings$id)
 
 
-# col_to_drop <- colnames(listings_df)[grep("url", colnames(listings_df))]
+query_reviews <- paste0("SELECT * FROM reviews WHERE listing_id IN (", paste(listing_id, collapse = ', ') ,")")
+res <- dbSendQuery(airbnb_db, query_reviews)
+# check the size
+# if it is too large we use chunk to retrieve it
+while (!dbHasCompleted(res)) {
+  chunk <- fetch(res, 50000)
+  print(nrow(chunk))
+}
 
-# listings_df[, c(col_to_drop) := NULL]
-
-# listings -> id
-# reviews -> listing_id
-
-# Amsterdam <- listings_df %>%
-#  inner_join(reviews_df, by = c("id" = "listing_id"), suffix = c("_listings", "_reviews"))
-# or left_join?
-
-
+dbClearResult(res)
+dbDisconnect(con)
 
 ```
+
+```{r}
+airbnb_db <- dbConnect(RSQLite::SQLite(), "D:\\airbnb\\airbnb.sqlite")
+
+most_recent_listings_date <- strsplit(list.files("csv_gz_files/South Aegean"), 
+                                      split = "_")[[length(list.files("csv_gz_files/South Aegean"))]][1]
+most_recent_listings <- fread(paste0("csv_gz_files/South Aegean/",most_recent_listings_date, "_listings.csv.gz"))
+scrape_id <- as.character(unique(most_recent_listings$scrape_id))
+
+query_listings <- paste0("SELECT * FROM listings WHERE scrape_id = ",scrape_id)
+
+res <- dbSendQuery(airbnb_db, query_listings)
+south_aegean_listings <- dbFetch(res, n=-1)
+south_aegean_listings <- south_aegean_listings %>% rename(listing_id = id)
+dbClearResult(res)
+rm(most_recent_listings)
+
+listing_id <- unique(south_aegean_listings$listing_id)
+
+query_reviews <- paste0("SELECT * FROM reviews WHERE listing_id IN (", paste(listing_id, collapse = ', ') ,")")
+res <- dbSendQuery(airbnb_db, query_reviews)
+# check the size
+# if it is too large we use chunk to retrieve it
+
+cl <- makePSOCKcluster(detectCores()-1)
+registerDoParallel(cl)
+
+clusterEvalQ(cl, {
+  library(tidytext)
+  library(cld3)
+  library(dplyr)
+  # some more library for pre processing
+})
+
+# make new db
+# we cannot handle whole data of one city in R session
+cityname <- "south_aegean"
+con <- dbConnect(RSQLite::SQLite(), paste0(cityname,".sqlite"))
+
+data("stop_words")
+split_size <- 20000
+
+while (!dbHasCompleted(res)) {
+  
+  south_aegean_reviews <- dbFetch(res, 500000)
+  print(paste("Fetched", nrow(south_aegean_reviews), "rows from reviews table"))
+  total_number_of_chunks <- ceiling(nrow(south_aegean_reviews)/split_size)
+  
+  south_aegean_reviews <- south_aegean_reviews %>% rename(review_id = id)
+  
+  print("Start parallel processing on the reviews data...")
+  
+  all_data_list <- foreach(i=1:total_number_of_chunks) %dopar% {
+    
+    if (i == 1){
+      this_start_row <- i 
+      this_last_row <- i*split_size
+    } else {
+      this_start_row <- (i-1)*split_size+1
+      this_last_row <- i*split_size
+    }
+    
+    # put pre processing code here!
+    
+    all_data_df <- south_aegean_listings %>% 
+      left_join(south_aegean_reviews[this_start_row:this_last_row, ])
+    
+    ## drop NA value -> nchar for review length -> plot (with hist) -> left right trim
+    all_data_df <- all_data_df[!is.na(all_data_df$comments), ]
+    all_data_df$review_length_chars <- nchar(all_data_df$comments)
+    all_data_df <- all_data_df %>% 
+      filter(review_length_chars > 145, review_length_chars < 1000)
+    
+    ##  language detection cld2 is faster than cld3
+    all_data_df <- all_data_df %>% 
+      mutate(review_language = cld3::detect_language(comments))
+    
+    all_data_df <- all_data_df %>% 
+      filter(review_language == "en")
+    
+    ##  digit and punctuation
+    all_data_df$comments <- gsub('[[:digit:]]+',' ', all_data_df$comments)
+    all_data_df$comments <- gsub('[[:punct:]]+',' ', all_data_df$comments)
+    
+    ##  stop words
+    tokens_all <- all_data_df %>% 
+      unnest_tokens(word,comments) %>% 
+      count(word,listing_id) %>% 
+      anti_join(stop_words)
+    
+    ##  remove abnormal length of tokens
+    tokens_all$token_length <- nchar(tokens_all$word)
+    
+    tokens_all %>% group_by(token_length) %>% summarise(total =n())
+    
+    tokens_all <- tokens_all %>% 
+      filter(token_length > 2, token_length < 17)
+    
+    return(list(all_data_df, tokens_all))
+  }
+  
+  print("Finished parallel processing!")
+  
+  df <- rbindlist(lapply(all_data_list, function(x){x[[1]]}))
+  tokens_all <- rbindlist(lapply(all_data_list, function(x){x[[2]]}))
+  
+  dbWriteTable(con, "all_data", df, append = TRUE)
+  dbWriteTable(con, "tokens", tokens_all, append = TRUE)
+  
+  rm(df, tokens_all)
+  print("Finished moving all data to Database!")
+}
+
+stopCluster(cl)
+rm(cl, south_aegean_listings, south_aegean_reviews, all_data_list)
+dbClearResult(res)
+dbDisconnect(airbnb_db)
+rm(airbnb_db, res)
+gc()
+```
+
 
 
