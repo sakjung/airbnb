@@ -1,9 +1,7 @@
 ---
-title: "airbnb"
-author: "Jung"
+title: "airbnb part A"
 output: html_document
 ---
-
 
 ```{r}
 library(rvest)
@@ -17,6 +15,8 @@ library(doParallel)
 library(rbenchmark)
 library(tidytext)
 library(cld3)
+library(qdap)
+library(tm)
 ```
 
 
@@ -177,107 +177,27 @@ rm(list=ls())
 
 ```
 
-# IGNORE THIS
-# JUST FOR A REFERENCE
-
-tryCatch(
-        {
-            # Just to highlight: if you want to use more than one 
-            # R expression in the "try" part then you'll have to 
-            # use curly brackets.
-            # 'tryCatch()' will return the last evaluated expression 
-            # in case the "try" part was completed successfully
-
-            message("This is the 'try' part")
-
-            readLines(con=url, warn=FALSE) 
-            # The return value of `readLines()` is the actual value 
-            # that will be returned in case there is no condition 
-            # (e.g. warning or error). 
-            # You don't need to state the return value via `return()` as code 
-            # in the "try" part is not wrapped insided a function (unlike that
-            # for the condition handlers for warnings and error below)
-        },
-        error=function(cond) {
-            message(paste("URL does not seem to exist:", url))
-            message("Here's the original error message:")
-            message(cond)
-            # Choose a return value in case of error
-            return(NA)
-        },
-        warning=function(cond) {
-            message(paste("URL caused a warning:", url))
-            message("Here's the original warning message:")
-            message(cond)
-            # Choose a return value in case of warning
-            return(NULL)
-        },
-        finally = {
-        # NOTE:
-        # Here goes everything that should be executed at the end,
-        # regardless of success or error.
-        # If you want more than one expression to be executed, then you 
-        # need to wrap them in curly brackets ({...}); otherwise you could
-        # just have written 'finally=<expression>' 
-            message(paste("Processed URL:", url))
-        }
-    )
-
 ```{r inpect the data}
 
-# investigate the first compiled files
+# investigate the compiled files in Amsterdam
 # to have a look at the data
-# and figure out what columns I need
+# and figure out what columns we need
 
 calendar_df <- fread("csv_gz_files/Amsterdam/2015-04-05_calendar.csv.gz")
 listings_df <- fread("csv_gz_files/Amsterdam/2015-04-05_listings.csv.gz")
 reviews_df <- fread("csv_gz_files/Amsterdam/2015-04-05_reviews.csv.gz")
 
-# drop useless columns containing "url"
-col_to_drop <- colnames(listings_df)[grepl("url", colnames(listings_df))]
-listings_df[, c(col_to_drop) := NULL]
-
-colnames(calendar_df)
-colnames(listings_df)
-colnames(reviews_df)
-
 ## columns we need:
 
 # columns we need in calendar
-calendar_col <- c("listing_id", "date", "available", "price")
-
+calendar_col <- c("listing_id", "date", "available", "price", "adjusted_price", 
+                  "minimum_nights", "maximum_nights")
 # columns we need in listings
 listings_col <- c("id", "scrape_id", "last_scraped", "name", "summary", "space", "description", "experiences_offered", "neighborhood_overview", "notes", "transit", "host_id", "host_name", "host_since", "host_location", "host_about", "host_response_time", "host_response_rate", "host_acceptance_rate", "host_is_superhost", "host_neighbourhood", "host_listings_count", "host_total_listings_count", "host_verifications", "host_has_profile_pic", "host_identity_verified", "neighbourhood", "neighbourhood_cleansed", "neighbourhood_group_cleansed", "is_location_exact", "property_type", "room_type", "accommodates", "bathrooms", "bedrooms", "beds", "bed_type", "amenities", "square_feet", "price", "weekly_price", "monthly_price", "security_deposit", "cleaning_fee", "guests_included", "extra_people", "minimum_nights", "maximum_nights", "calendar_updated", "has_availability", "availability_30", "availability_60", "availability_90", "availability_365", "number_of_reviews", "first_review", "last_review", "review_scores_rating", "review_scores_accuracy", "review_scores_cleanliness", "review_scores_checkin", "review_scores_communication", "review_scores_location", "review_scores_value", "requires_license", "license", "instant_bookable", "cancellation_policy", "require_guest_profile_picture", "require_guest_phone_verification", "calculated_host_listings_count", "reviews_per_month")
 
 # columns we need in reviews
 reviews_col <- c("listing_id", "id", "date", "reviewer_id", "reviewer_name", "comments")
 
-# making a seed file
-# use this seed to create table schema in sqlite database
-calendar_seed <- calendar_df[1]
-listings_seed <- as_tibble(listings_df)[1, listings_col]
-reviews_seed <- reviews_df[1]
-
-
-# saved seed files as csv just in case
-# write.csv(calendar_seed, "calendar_seed")
-# write.csv(listings_seed, "listings_seed")
-# write.csv(reviews_seed, "reviews_seed")
-
-rm(calendar_df, listings_df, reviews_df)
-gc()
-memory.size()
-```
-
-```{r initiate db connection}
-
-airbnb_db <- dbConnect(RSQLite::SQLite(), "D:\\airbnb\\airbnb.sqlite")
-
-dbCreateTable(airbnb_db, "calendar", calendar_seed)
-dbCreateTable(airbnb_db, "listings", listings_seed)
-dbCreateTable(airbnb_db, "reviews", reviews_seed)
-
-dbDisconnect(airbnb_db)
 ```
 
 
@@ -437,17 +357,17 @@ benchmark <- benchmark(
           replications = 1
 )
 
-# remove after the tests
+# remove relevant data (d.g. db file) after the tests
 # dbDisconnect(airbnb_db_test)
 # unlink("D:\\airbnb\\airbnb_test.sqlite")
 
-# the result shows that bulk_insert shows the best performance
+# the result shows that bulk_insert has the best performance
 # we will use bulk_insert method to export csv.gz files to sqlite database
 
 # Since the amount of data is too large,
-# we devided the whole procedures into two
-# to process lisings and reviews separtely
-# the follwing two chunks are the two processes
+# we devided the whole procedures into three (listings, reviews, calendar)
+# to process separtely
+# the follwing three chunks are the three processes
 ```
 
 ```{r listings to db}
@@ -588,7 +508,7 @@ dbDisconnect(airbnb_db)
 
 ```{r reviews to db}
 # copy whole chunk to Rscript and run
-# when laptop is not in use (e.g. before sleep)
+# when laptop is not in use (e.g. before go to bed)
 library(dplyr)
 library(data.table)
 library(RSQLite)
@@ -661,54 +581,97 @@ for (i in 1:length(list.files("csv_gz_files"))) {
 dbDisconnect(airbnb_db)
 ```
 
+```{r calendar to db}
+# copy whole chunk to Rscript and run
+# when laptop is not in use (e.g. before go to bed)
+library(dplyr)
+library(data.table)
+library(RSQLite)
 
-```{r retrieve South Aegean}
-list.files("csv_gz_files/South Aegean")
+calendar_df <- fread("csv_gz_files/Amsterdam/2019-12-07_calendar.csv.gz")
+
+calendar_seed <- calendar_df[1]
+
+rm(calendar_df)
+gc()
+print(memory.size())
+
+
+calendar_col <- c("listing_id", "date", "available", "price", "adjusted_price", 
+                  "minimum_nights", "maximum_nights")
 
 airbnb_db <- dbConnect(RSQLite::SQLite(), "D:\\airbnb\\airbnb.sqlite")
 
+dbCreateTable(airbnb_db, "calendar", calendar_seed)
 
-most_recent_listings_date <- strsplit(list.files("csv_gz_files/South Aegean"), 
-                                      split = "_")[[length(list.files("csv_gz_files/South Aegean"))]][1]
-most_recent_listings <- fread(paste0("csv_gz_files/South Aegean/",most_recent_listings_date, "_listings.csv.gz"))
-review <- fread(paste0("csv_gz_files/South Aegean/",most_recent_listings_date, "_reviews.csv.gz"))
-scrape_id <- as.character(unique(most_recent_listings$scrape_id))
+rm(calendar_seed)
+gc()
+print(memory.size())
 
-# use this scrape_id to extract most recent listings from the database
+for (i in 1:length(list.files("csv_gz_files"))) {
+  
+  # folder structure - csv_gz_files/cityname
+  
+  this_folder <- list.files("csv_gz_files")[i]
+  all_files <- list.files(paste0("csv_gz_files/",this_folder))
+  
+  if (length(all_files) == 0) {
+    print (paste(this_folder, ": this folder is empty")) ; next
+  }
+  
+  all_files_calendar <- all_files[grepl("calendar",all_files)]
+  
+  dbBegin(airbnb_db)
+  
+  for (j in 1:length(all_files_calendar)) {
+    
+    this_calendar_file <- all_files_calendar[j]
+    print(paste("Reading", this_folder, this_calendar_file, "...."))
+    print(memory.size())
+    
+    start <- Sys.time()
+    
+    calendar_df <- fread(paste0("csv_gz_files/",this_folder,"/",this_calendar_file))
+    
+    # adjusting dataframe according to the fileds in the database table
+    col_to_add_cal <- calendar_col[! calendar_col %in% colnames(calendar_df)]
+    col_to_drop_cal <- colnames(calendar_df)[! colnames(calendar_df) %in% calendar_col] 
+    suppressWarnings(calendar_df[, c(col_to_drop_cal) := NULL])
+    suppressWarnings(calendar_df[, col_to_add_cal] <- NA)
+    
+    q <- dbSendQuery(airbnb_db, 'INSERT INTO calendar (listing_id, date, available, price, 
+    adjusted_price, minimum_nights, maximum_nights) 
+                          VALUES (:listing_id, :date, :available, :price, :adjusted_price, 
+      :minimum_nights, :maximum_nights);', calendar_df)
+    
+    dbClearResult(q)
+    
+    print(paste("Moved", this_folder, this_calendar_file, "to the calendar table"))
+    print(paste("It took", Sys.time()-start, "to process!"))
+    
+    rm(calendar_df)
+    gc()
+    print(memory.size())
+  }
+  
+  # one transaction per city
+  dbCommit(airbnb_db)
+}
+
+dbDisconnect(airbnb_db)
+```
+
+
+```{r pre processing}
+# we chose to analayse south_aegean
+# which has relatively small amount of data
+# we will find out the process of text analysis
+# then we make code accordingly which can be applicable 
+airbnb_db <- dbConnect(RSQLite::SQLite(), "D:\\airbnb\\airbnb.sqlite")
 
 # create index for scrape_id and listing_id for fast query
 # dbSendQuery(airbnb_db, "CREATE INDEX scrape_id ON listings (scrape_id)")
 # dbSendQuery(airbnb_db, "CREATE INDEX listing_id ON reviews (listing_id)")
-
-dbListTables(airbnb_db)
-
-# query to extract most recent listing file
-query_listings <- paste0("SELECT * FROM listings WHERE scrape_id = ",scrape_id)
-
-res <- dbSendQuery(airbnb_db, query_listings)
-south_aegean_listings <- dbFetch(res, n=-1)
-dbClearResult(res)
-rm(most_recent_listings)
-
-listing_id <- unique(south_aegean_listings$id)
-
-
-query_reviews <- paste0("SELECT * FROM reviews WHERE listing_id IN (", paste(listing_id, collapse = ', ') ,")")
-res <- dbSendQuery(airbnb_db, query_reviews)
-# check the size
-# if it is too large we use chunk to retrieve it
-while (!dbHasCompleted(res)) {
-  chunk <- fetch(res, 50000)
-  print(nrow(chunk))
-}
-
-dbClearResult(res)
-dbDisconnect(con)
-
-```
-
-```{r}
-airbnb_db <- dbConnect(RSQLite::SQLite(), "D:\\airbnb\\airbnb.sqlite")
 
 most_recent_listings_date <- strsplit(list.files("csv_gz_files/South Aegean"), 
                                       split = "_")[[length(list.files("csv_gz_files/South Aegean"))]][1]
@@ -756,7 +719,7 @@ while (!dbHasCompleted(res)) {
   
   south_aegean_reviews <- south_aegean_reviews %>% rename(review_id = id)
   
-  print("Start parallel processing on the reviews data...")
+  print("Start parallel processing...")
   
   all_data_list <- foreach(i=1:total_number_of_chunks) %dopar% {
     
@@ -825,7 +788,209 @@ dbClearResult(res)
 dbDisconnect(airbnb_db)
 rm(airbnb_db, res)
 gc()
+
+# there are duplicate row in tokens table due to parallel processing
+# same combination of word and listing_id
+# we need to sum all n within one distinct combination of word and listing_id 
+dbSendQuery(con, "CREATE TABLE all_tokens AS
+SELECT word, listing_id, SUM(n) AS n, token_length
+FROM tokens
+            GROUP BY word, listing_id;")
+
+dbSendQuery(con, "DROP TABLE tokens")
+dbListTables(con)
+dbDisconnect(con)
+rm(con)
 ```
+
+```{r a}
+```
+
+```{r b}
+```
+
+## What variables can be extracted from the text that can be related with the rating score ?
+
+```{r c}
+con <- dbConnect(SQLite(), "south_aegean.sqlite")
+
+dbListTables(con)
+
+all_data <- dbGetQuery(con, "SELECT * FROM all_data")
+
+rating_categories <- all_data[complete.cases(all_data$review_scores_rating), ] %>% group_by(listing_id) %>% summarise(avg_rating = mean(review_scores_rating)) %>% ungroup()
+
+# Lets find the levels that we want to aggregate the words 
+hist(rating_categories$avg_rating)
+quantile(rating_categories$avg_rating)
+
+# now assign them in a rating group
+
+# rating is skewed (most of them are high)
+# e.g. rating score - top 50% vs the other
+# cut in two groups (minimum possible)
+
+tokens_all <- dbGetQuery(con, "SELECT * FROM all_tokens")
+
+# The overall rating is high
+# most of the commnets are positive
+
+rating_categories$rating_category <- ifelse(rating_categories$avg_rating<94,1,2)
+
+ratings_categories_tokens <- tokens_all %>% left_join(rating_categories) %>% 
+  group_by(rating_category,word) %>% summarise(total = sum(n))
+
+ratings_categories_tokens %>% filter(rating_category==1) %>% arrange(desc(total)) %>% top_n(15)
+
+ratings_categories_tokens %>% filter(rating_category==2) %>% arrange(desc(total)) %>% top_n(15)
+
+```
+
+## Is readability of the property description an important predictor of the satisfaction ratings?
+
+```{r c-a}
+all_listings <- all_data %>% select(listing_id,description,price) %>% 
+  unique(.)
+
+cl <- makePSOCKcluster(detectCores()-1)
+registerDoParallel(cl)
+
+clusterEvalQ(cl, {
+  library(tidytext)
+  library(dplyr)
+  library(tm)
+  library(quanteda)
+  # some more library for pre processing
+})
+
+readability_list <- foreach(i=1:nrow(all_listings)) %dopar% {
+  
+  this_text <- iconv(all_listings$description[i])
+  this_text <- removeNumbers(this_text)
+  this_text <- removePunctuation(this_text)
+  
+  tryCatch(
+    {
+      readability_h <- textstat_readability(this_text, "all", drop = TRUE)
+      },
+    error=function(e){
+      cat("Error parsing")
+    })
+  
+  if(!is.null(readability_h)){
+    readability_h$document <- all_listings$listing_id[i]
+  }
+  
+  return(readability_h)
+}
+
+stopCluster(cl)
+rm(cl)
+
+readability_all <- rbindlist(readability_list)
+readability_all <- readability_all %>% rename(listing_id = document)
+
+rm(readability_list)
+
+```
+
+```{r c-a}
+all_ratings_read <- rating_categories %>% 
+  left_join(readability_all)
+
+# if there is NA or 0 case
+# all_ratings_read <- all_ratings_read[complete.cases(all_ratings_read$avg_rating), ]
+# all_ratings_read <- all_ratings_read[which(is.finite(log(all_ratings_read$avg_rating))), ]
+
+
+model1 <- lm(log(all_ratings_read$avg_rating)~all_ratings_read$meanSentenceLength)
+model2 <- lm(all_ratings_read$avg_rating~all_ratings_read$meanWordSyllables)
+model3 <- lm(all_ratings_read$avg_rating~all_ratings_read$ARI)
+model4 <- lm(all_ratings_read$avg_rating~all_ratings_read$Coleman)
+model5 <- lm(all_ratings_read$avg_rating~all_ratings_read$Flesch.Kincaid)
+model6 <- lm(all_ratings_read$avg_rating~all_ratings_read$Linsear.Write)
+
+rm(rating_categories, ratings_categories_tokens)
+gc()
+```
+
+## Is mentioning the name of the owner important?
+
+```{r c-b}
+cl <- makePSOCKcluster(detectCores()-1)
+registerDoParallel(cl)
+
+clusterEvalQ(cl, {
+  library(dplyr)
+  # some more library for pre processing
+})
+
+all_data$host_name_mentioned <- NA
+
+host_name_mentioned_list <- foreach(i=1:nrow(all_data)) %dopar% {
+  
+  check_h <- as.numeric(grepl(all_data$host_name[i],
+                              all_data$comments[i],
+                              ignore.case = T))
+  return(check_h)
+}
+
+all_data$host_name_mentioned <- unlist(host_name_mentioned_list)
+  
+stopCluster(cl)
+rm(cl)
+
+# if host name appears at the very start of the review
+# could be fake review
+
+library(ggplot2)
+# We check the influence on whether the name of 
+# the owner is present in the review using the rating 
+# For this we are going to add a binary 0,1 variable 
+
+# How does it look graphically 
+ggplot(subset(all_data,!is.na(host_name_mentioned)),aes(x=factor(host_name_mentioned),y=review_scores_rating))+geom_boxplot()
+
+
+t.test(all_data$review_scores_rating~factor(all_data$host_name_mentioned))
+
+t.test(all_data$review_scores_cleanliness~factor(all_data$host_name_mentioned))
+
+```
+
+Using the textual description of the property supplied by the owner, how does this relate with the price that the property is listed for rent?
+
+```{r d}
+
+all_listings_read <- all_listings %>% 
+  left_join(readability_all)
+
+# For working with the price 
+# we need to parse it first as a numeric 
+# variable 
+
+all_listings_read$price <- as.numeric(gsub("\\$","",all_listings_read$price))
+
+# remove NA
+all_listings_read <- all_listings_read[complete.cases(all_listings_read$price), ]
+
+# Ok basic regression model
+# scale for price needs log
+# model1 <- lm(log(all_listings_read$price)~all_listings_read$word.count)
+
+all_listings_read <- all_listings_read[which(is.finite(log(all_listings_read$price))), ]
+
+model1 <- lm(log(all_listings_read$price)~all_listings_read$meanSentenceLength)
+model2 <- lm(log(all_listings_read$price)~all_listings_read$meanWordSyllables)
+model3 <- lm(log(all_listings_read$price)~all_listings_read$ARI)
+model4 <- lm(log(all_listings_read$price)~all_listings_read$Coleman)
+model5 <- lm(log(all_listings_read$price)~all_listings_read$Flesch.Kincaid)
+model6 <- lm(log(all_listings_read$price)~all_listings_read$Linsear.Write)
+
+stargazer::stargazer(model1,model2,model3,model4,model5,model6,type = "text")
+
+```
+
 
 
 
